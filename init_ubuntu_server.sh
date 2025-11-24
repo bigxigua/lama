@@ -39,7 +39,7 @@ sudo apt-get install -y \
     mc \
     build-essential \
     rsync \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -69,15 +69,57 @@ echo -e "${GREEN}[4/8] 安装 Miniconda...${NC}"
 if [ -d "$HOME/miniconda3" ]; then
     echo -e "${YELLOW}Miniconda 已存在，跳过安装${NC}"
 else
-    MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
-    MINICONDA_INSTALLER="$HOME/miniconda_installer.sh"
+    # 检查本地是否已有安装包（按优先级检查多个位置）
+    MINICONDA_INSTALLER=""
+    POSSIBLE_LOCATIONS=(
+        "$HOME/Miniconda3-latest-Linux-x86_64.sh"
+        "$HOME/Downloads/Miniconda3-latest-Linux-x86_64.sh"
+        "$HOME/miniconda_installer.sh"
+        "/tmp/Miniconda3-latest-Linux-x86_64.sh"
+        "./Miniconda3-latest-Linux-x86_64.sh"
+        "$HOME/miniconda3-latest-Linux-x86_64.sh"
+    )
     
-    echo "下载 Miniconda..."
-    wget -O "$MINICONDA_INSTALLER" "$MINICONDA_URL"
+    # 也检查任何包含 "Miniconda" 和 ".sh" 的文件
+    for location in "${POSSIBLE_LOCATIONS[@]}"; do
+        if [ -f "$location" ]; then
+            MINICONDA_INSTALLER="$location"
+            echo -e "${GREEN}找到本地安装包: $location${NC}"
+            break
+        fi
+    done
     
+    # 如果没找到，尝试在当前目录和用户目录查找任何 Miniconda*.sh 文件
+    if [ -z "$MINICONDA_INSTALLER" ]; then
+        FOUND_FILE=$(find "$HOME" -maxdepth 2 -name "Miniconda*.sh" -type f 2>/dev/null | head -1)
+        if [ ! -z "$FOUND_FILE" ]; then
+            MINICONDA_INSTALLER="$FOUND_FILE"
+            echo -e "${GREEN}找到本地安装包: $FOUND_FILE${NC}"
+        fi
+    fi
+    
+    # 如果还是没找到，则下载
+    if [ -z "$MINICONDA_INSTALLER" ]; then
+        MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+        MINICONDA_INSTALLER="$HOME/miniconda_installer.sh"
+        
+        echo -e "${YELLOW}未找到本地安装包，开始下载 Miniconda...${NC}"
+        echo -e "${YELLOW}提示：如果下载太慢，可以将安装包上传到以下任一位置：${NC}"
+        echo "  - $HOME/Miniconda3-latest-Linux-x86_64.sh"
+        echo "  - $HOME/Downloads/Miniconda3-latest-Linux-x86_64.sh"
+        echo "  - 当前目录: $(pwd)/Miniconda3-latest-Linux-x86_64.sh"
+        echo ""
+        wget -O "$MINICONDA_INSTALLER" "$MINICONDA_URL"
+    fi
+    
+    echo "使用安装包: $MINICONDA_INSTALLER"
     echo "安装 Miniconda..."
     bash "$MINICONDA_INSTALLER" -b -p "$HOME/miniconda3"
-    rm "$MINICONDA_INSTALLER"
+    
+    # 如果是下载的临时文件，删除它；如果是用户提供的本地文件，保留
+    if [[ "$MINICONDA_INSTALLER" == "$HOME/miniconda_installer.sh" ]]; then
+        rm "$MINICONDA_INSTALLER"
+    fi
     
     # 初始化 conda
     "$HOME/miniconda3/bin/conda" init bash
@@ -171,14 +213,37 @@ echo -e "${GREEN}[8/8] 安装项目依赖包...${NC}"
 # 升级 pip
 pip install --upgrade pip
 
-# 安装基础科学计算包（通过 conda，更稳定）
+# 安装基础科学计算包（通过 conda，预编译，避免编译）
+echo "安装基础科学计算包（conda）..."
 conda install -y numpy scipy matplotlib pandas scikit-image scikit-learn joblib pyyaml tqdm tabulate packaging -c conda-forge
 
-# 安装其他 Python 依赖
+# 安装可能编译的包（优先使用 conda）
+echo "安装 OpenCV（conda，预编译）..."
+conda install -y opencv -c conda-forge || {
+    echo -e "${YELLOW}conda 安装 OpenCV 失败，尝试 pip 安装预编译包...${NC}"
+    # 尝试安装有预编译 wheel 的版本
+    pip install opencv-python==4.5.3.56 --only-binary :all: || \
+    pip install opencv-python-headless==4.5.3.56 --only-binary :all: || {
+        echo -e "${YELLOW}警告：OpenCV 可能需要编译，这可能需要较长时间...${NC}"
+        pip install opencv-python || pip install opencv-python-headless
+    }
+}
+
+# 安装 Shapely（优先使用 conda，避免编译）
+echo "安装 Shapely（conda，预编译）..."
+conda install -y shapely -c conda-forge || {
+    echo -e "${YELLOW}conda 安装 Shapely 失败，尝试 pip 安装预编译包...${NC}"
+    # 尝试安装较新版本（通常有预编译包）
+    pip install shapely --only-binary :all: || \
+    pip install shapely==1.7.1 --only-binary :all: || {
+        echo -e "${YELLOW}警告：Shapely 可能需要编译...${NC}"
+        pip install shapely==1.7.1
+    }
+}
+
+# 安装纯 Python 包（通常不需要编译）
+echo "安装纯 Python 依赖包..."
 pip install easydict==1.9.0
-pip install "scikit-image>=0.17.2,<0.20" || pip install scikit-image
-pip install "scikit-learn>=0.24.2,<0.25" || pip install scikit-learn
-pip install opencv-python opencv-python-headless
 pip install albumentations==0.5.2
 pip install hydra-core==1.1.0
 pip install pytorch-lightning==1.2.9
@@ -187,11 +252,10 @@ pip install webdataset
 pip install wldhx.yadisk-direct
 pip install braceexpand==0.1.7
 pip install imgaug==0.4.0
-pip install shapely==1.7.1
 
 # TensorFlow（可选，主要用于评估）
 echo "安装 TensorFlow（可选）..."
-pip install tensorflow || echo -e "${YELLOW}TensorFlow 安装失败（可选包，可稍后安装）${NC}"
+pip install tensorflow --only-binary :all: || echo -e "${YELLOW}TensorFlow 安装失败（可选包，可稍后安装）${NC}"
 
 # 完成
 echo ""

@@ -19,7 +19,26 @@ git clone https://github.com/advimman/lama.git
 cd lama
 ```
 
-2. **运行初始化脚本**：
+2. **（可选）如果本地已有 Miniconda 安装包，上传到服务器**：
+   
+   如果服务器下载速度慢，你可以：
+   
+   - 从本地下载：https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+   - 上传到服务器的以下任一位置（脚本会自动检测）：
+     ```bash
+     # 方式 1: 上传到用户主目录
+     scp Miniconda3-latest-Linux-x86_64.sh user@your-server:~/
+     
+     # 方式 2: 上传到 Downloads 目录
+     scp Miniconda3-latest-Linux-x86_64.sh user@your-server:~/Downloads/
+     
+     # 方式 3: 上传到项目目录
+     scp Miniconda3-latest-Linux-x86_64.sh user@your-server:~/lama/
+     ```
+   
+   脚本会自动检测并使用本地安装包，无需下载。
+
+3. **运行初始化脚本**：
 ```bash
 chmod +x init_ubuntu_server.sh
 ./init_ubuntu_server.sh
@@ -66,7 +85,7 @@ sudo apt-get upgrade -y
 sudo apt-get install -y \
     wget curl git vim nano tmux mc \
     build-essential rsync \
-    libgl1-mesa-glx libglib2.0-0 \
+    libgl1 libglib2.0-0 \
     libsm6 libxext6 libxrender-dev libgomp1 \
     ffmpeg unzip ca-certificates
 ```

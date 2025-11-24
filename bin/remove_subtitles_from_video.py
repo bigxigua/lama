@@ -455,7 +455,7 @@ def extract_audio(video_path, audio_path):
             '-y',  # 覆盖输出文件
             audio_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, stderr=subprocess.PIPE)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         LOGGER.info(f"音频已提取到: {audio_path}")
         return True
     except subprocess.CalledProcessError as e:
