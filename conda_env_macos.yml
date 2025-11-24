@@ -1,0 +1,41 @@
+name: lama
+channels:
+  - defaults
+  - conda-forge
+  - pytorch
+# 注意：conda环境文件中的pip部分不支持直接设置源
+# 如需使用清华源，请在创建环境后执行以下命令：
+# pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+# pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn
+# 或者复制项目根目录的 pip.conf 到 ~/.pip/pip.conf
+dependencies:
+  - python=3.8
+  - pip
+  - numpy
+  - scipy
+  - matplotlib
+  - pandas
+  - scikit-image
+  - scikit-learn
+  - joblib
+  - pyyaml
+  - tqdm
+  - tabulate
+  - packaging
+  - pip:
+    - easydict==1.9.0
+    - scikit-image==0.17.2
+    - scikit-learn==0.24.2
+    - opencv-python
+    - tensorflow
+    - albumentations==0.5.2
+    - hydra-core==1.1.0
+    - pytorch-lightning==1.2.9
+    - kornia==0.5.0
+    - webdataset
+    - wldhx.yadisk-direct
+    - braceexpand==0.1.7
+    - imgaug==0.4.0
+    - shapely==1.7.1
+    - opencv-python-headless==4.5.3.56
+
