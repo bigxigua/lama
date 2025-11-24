@@ -15,6 +15,8 @@ import subprocess
 from pathlib import Path
 from tqdm import tqdm
 from omegaconf import OmegaConf
+from contextlib import contextmanager
+from io import StringIO
 
 # 设置环境变量（CPU优化：使用多线程）
 # 注意：如果使用GPU，这些设置会被GPU计算覆盖
@@ -34,6 +36,38 @@ from saicinpainting.training.trainers import load_checkpoint
 
 LOGGER = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+@contextmanager
+def suppress_stdout():
+    """临时抑制stdout和logging输出的上下文管理器（保留stderr用于错误信息）"""
+    with open(os.devnull, 'w') as devnull:
+        old_stdout = sys.stdout
+        # 保存当前所有logger的级别
+        old_levels = {}
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers[:]:
+            old_levels[id(handler)] = handler.level
+            handler.setLevel(logging.ERROR)  # 只显示ERROR级别以上的日志
+        
+        # 也设置其他可能相关的logger
+        for logger_name in ['pytorch_lightning', 'lightning', 'saicinpainting']:
+            logger = logging.getLogger(logger_name)
+            old_levels[logger_name] = logger.level
+            logger.setLevel(logging.ERROR)
+        
+        try:
+            sys.stdout = devnull
+            yield
+        finally:
+            sys.stdout = old_stdout
+            # 恢复logger级别
+            for handler in root_logger.handlers:
+                if id(handler) in old_levels:
+                    handler.setLevel(old_levels[id(handler)])
+            for logger_name, level in old_levels.items():
+                if isinstance(logger_name, str):
+                    logging.getLogger(logger_name).setLevel(level)
 
 
 def create_default_config():
@@ -304,10 +338,13 @@ def process_frames_batch(model, frames, masks, device, pad_out_to_modulo=8, batc
     """
     results = []
     
+    total_batches = (len(frames) + batch_size - 1) // batch_size
+    LOGGER.info(f"开始批量处理 {len(frames)} 帧，共 {total_batches} 个批次，每批 {batch_size} 帧")
+    
     # 按批次处理
-    for i in range(0, len(frames), batch_size):
-        batch_frames = frames[i:i+batch_size]
-        batch_masks = masks[i:i+batch_size]
+    for batch_idx in tqdm(range(0, len(frames), batch_size), desc="处理批次", total=total_batches):
+        batch_frames = frames[batch_idx:batch_idx+batch_size]
+        batch_masks = masks[batch_idx:batch_idx+batch_size]
         
         # 准备批次数据
         batch_images = []
@@ -369,6 +406,7 @@ def process_frames_batch(model, frames, masks, device, pad_out_to_modulo=8, batc
                 
                 results.append(result_bgr)
     
+    LOGGER.info(f"批量处理完成，共处理 {len(results)} 帧")
     return results
 
 
@@ -619,11 +657,177 @@ def main():
     output_dir = str(output_dir)
     
     # 设置设备
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    LOGGER.info(f"使用设备: {device}")
+    # 详细的GPU诊断信息
+    LOGGER.info("=" * 60)
+    LOGGER.info("GPU诊断信息:")
+    LOGGER.info(f"PyTorch版本: {torch.__version__}")
     
-    # CPU优化设置
-    if device.type == 'cpu':
+    # 检查GPU硬件（通过lspci）
+    try:
+        lspci_result = subprocess.run(['lspci'], capture_output=True, text=True, timeout=5)
+        if lspci_result.returncode == 0:
+            nvidia_gpus = [line for line in lspci_result.stdout.split('\n') if 'nvidia' in line.lower() or 'vga' in line.lower()]
+            if nvidia_gpus:
+                LOGGER.info(f"检测到GPU硬件: {len(nvidia_gpus)} 个设备")
+                for gpu in nvidia_gpus[:3]:  # 只显示前3个
+                    LOGGER.info(f"  - {gpu.strip()}")
+            else:
+                LOGGER.warning("未检测到NVIDIA GPU硬件（通过lspci）")
+        else:
+            LOGGER.warning("lspci命令执行失败")
+    except FileNotFoundError:
+        LOGGER.warning("lspci命令未找到")
+    except Exception as e:
+        LOGGER.debug(f"检查lspci时出错: {e}")
+    
+    # 检查nvidia-smi是否可用
+    nvidia_smi_found = False
+    try:
+        # 尝试多个可能的路径
+        nvidia_smi_paths = ['nvidia-smi', '/usr/bin/nvidia-smi', '/usr/local/bin/nvidia-smi']
+        for nvidia_smi_path in nvidia_smi_paths:
+            try:
+                nvidia_smi_result = subprocess.run([nvidia_smi_path, '--query-gpu=name,memory.total', '--format=csv,noheader'], 
+                                                  capture_output=True, text=True, timeout=5)
+                if nvidia_smi_result.returncode == 0:
+                    LOGGER.info(f"nvidia-smi输出: {nvidia_smi_result.stdout.strip()}")
+                    nvidia_smi_found = True
+                    break
+            except FileNotFoundError:
+                continue
+        if not nvidia_smi_found:
+            LOGGER.warning("nvidia-smi命令未找到，可能CUDA驱动未安装")
+            LOGGER.warning("请检查：")
+            LOGGER.warning("  1. 是否安装了NVIDIA驱动: sudo apt-get install nvidia-driver-xxx")
+            LOGGER.warning("  2. 驱动是否正确加载: lsmod | grep nvidia")
+            LOGGER.warning("  3. 是否需要重启服务器")
+    except Exception as e:
+        LOGGER.warning(f"检查nvidia-smi时出错: {e}")
+    
+    # 检查CUDA库路径
+    cuda_paths = ['/usr/local/cuda', '/usr/local/cuda-11.8', '/usr/local/cuda-12.0']
+    cuda_found = False
+    for cuda_path in cuda_paths:
+        if os.path.exists(cuda_path):
+            LOGGER.info(f"找到CUDA安装路径: {cuda_path}")
+            cuda_found = True
+            break
+    if not cuda_found:
+        LOGGER.warning("未找到CUDA安装路径（/usr/local/cuda*）")
+    
+    # 检查PyTorch的CUDA支持
+    cuda_available = torch.cuda.is_available()
+    LOGGER.info(f"torch.cuda.is_available(): {cuda_available}")
+    
+    # 检查PyTorch编译的CUDA版本
+    pytorch_cuda_version = None
+    if hasattr(torch.version, 'cuda') and torch.version.cuda:
+        pytorch_cuda_version = torch.version.cuda
+        LOGGER.info(f"PyTorch编译的CUDA版本: {pytorch_cuda_version}")
+    
+    # 检查系统CUDA版本（通过nvidia-smi）
+    system_cuda_version = None
+    if nvidia_smi_found:
+        try:
+            nvidia_smi_version = subprocess.run(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'], 
+                                               capture_output=True, text=True, timeout=5)
+            if nvidia_smi_version.returncode == 0:
+                # 尝试获取CUDA版本
+                nvidia_smi_cuda = subprocess.run(['nvidia-smi'], capture_output=True, text=True, timeout=5)
+                if nvidia_smi_cuda.returncode == 0:
+                    import re
+                    cuda_match = re.search(r'CUDA Version: (\d+\.\d+)', nvidia_smi_cuda.stdout)
+                    if cuda_match:
+                        system_cuda_version = cuda_match.group(1)
+                        LOGGER.info(f"系统CUDA版本（nvidia-smi）: {system_cuda_version}")
+        except Exception:
+            pass
+    
+    if cuda_available:
+        try:
+            if hasattr(torch.backends, 'cudnn') and hasattr(torch.backends.cudnn, 'version'):
+                LOGGER.info(f"cuDNN版本: {torch.backends.cudnn.version()}")
+        except Exception:
+            pass
+    else:
+        # 检查版本不匹配问题
+        if pytorch_cuda_version and system_cuda_version:
+            LOGGER.warning(f"⚠️  CUDA版本不匹配！")
+            LOGGER.warning(f"   PyTorch编译版本: CUDA {pytorch_cuda_version}")
+            LOGGER.warning(f"   系统CUDA版本: {system_cuda_version}")
+            LOGGER.warning(f"   这可能导致PyTorch无法使用GPU")
+        LOGGER.warning("PyTorch未检测到CUDA支持")
+        LOGGER.warning("可能的原因：")
+        LOGGER.warning("1. PyTorch安装的是CPU版本（需要安装CUDA版本的PyTorch）")
+        LOGGER.warning("2. CUDA驱动未正确安装")
+        LOGGER.warning("3. CUDA版本不匹配")
+        LOGGER.warning("")
+        LOGGER.warning("解决方案（按顺序执行）：")
+        LOGGER.warning("")
+        LOGGER.warning("步骤1: 检查GPU硬件")
+        LOGGER.warning("  lspci | grep -i nvidia")
+        LOGGER.warning("  或: lspci | grep -i vga")
+        LOGGER.warning("")
+        LOGGER.warning("步骤2: 安装NVIDIA驱动（如果nvidia-smi不可用）")
+        LOGGER.warning("  # Ubuntu/Debian:")
+        LOGGER.warning("  sudo apt-get update")
+        LOGGER.warning("  sudo apt-get install -y nvidia-driver-535  # 或更新版本")
+        LOGGER.warning("  # 安装后需要重启服务器")
+        LOGGER.warning("")
+        LOGGER.warning("步骤3: 验证驱动安装")
+        LOGGER.warning("  nvidia-smi  # 应该显示GPU信息")
+        LOGGER.warning("")
+        LOGGER.warning("步骤4: 安装CUDA版本的PyTorch")
+        LOGGER.warning("")
+        if system_cuda_version and system_cuda_version.startswith('12.'):
+            LOGGER.warning("  ⚠️  检测到系统CUDA 12.x，PyTorch 1.8.0不支持CUDA 12.x")
+            LOGGER.warning("")
+            LOGGER.warning("  方案A（推荐）: 安装支持CUDA 12.1的PyTorch 2.x:")
+            LOGGER.warning("    conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia -y")
+            LOGGER.warning("")
+            LOGGER.warning("  方案B: 安装支持CUDA 11.8的PyTorch（向后兼容）:")
+            LOGGER.warning("    conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia -y")
+            LOGGER.warning("")
+            LOGGER.warning("  方案C: 使用pip安装（CUDA 12.1）:")
+            LOGGER.warning("    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+        elif system_cuda_version and system_cuda_version.startswith('11.'):
+            LOGGER.warning("  # 对于CUDA 11.x，安装PyTorch + CUDA 11.8:")
+            LOGGER.warning("  conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia -y")
+            LOGGER.warning("")
+            LOGGER.warning("  # 或使用pip:")
+            LOGGER.warning("  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118")
+        else:
+            LOGGER.warning("  # 对于PyTorch 1.8.0 + CUDA 10.2（不推荐，版本太旧）:")
+            LOGGER.warning("  conda install pytorch==1.8.0 torchvision==0.9.0 torchaudio==0.8.0 cudatoolkit=10.2 -c pytorch -y")
+            LOGGER.warning("")
+            LOGGER.warning("  # 推荐：安装更新的PyTorch + CUDA 11.8:")
+            LOGGER.warning("  conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia -y")
+            LOGGER.warning("")
+            LOGGER.warning("  # 或使用pip:")
+            LOGGER.warning("  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118")
+        LOGGER.warning("")
+        LOGGER.warning("步骤5: 验证安装")
+        LOGGER.warning("  python -c \"import torch; print(torch.cuda.is_available())\"  # 应该输出True")
+    
+    LOGGER.info("=" * 60)
+    
+    if cuda_available:
+        gpu_count = torch.cuda.device_count()
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
+        LOGGER.info(f"检测到 {gpu_count} 个GPU设备")
+        LOGGER.info(f"GPU 0: {gpu_name}, 显存: {gpu_memory:.2f} GB")
+        device = torch.device("cuda:0")
+        # GPU可以使用更大的批处理（根据显存调整）
+        if gpu_memory >= 8:
+            batch_size = 8  # 8GB以上显存使用8
+        elif gpu_memory >= 4:
+            batch_size = 4  # 4-8GB显存使用4
+        else:
+            batch_size = 2  # 小于4GB显存使用2
+        LOGGER.info(f"GPU模式：使用批处理大小={batch_size}")
+    else:
+        device = torch.device("cpu")
         # 设置CPU线程数（使用所有16核）
         torch.set_num_threads(16)
         # 启用MKL优化
@@ -632,10 +836,8 @@ def main():
         # 批处理大小（CPU建议较小，避免内存溢出）
         batch_size = 2
         LOGGER.info(f"CPU模式：使用批处理大小={batch_size}，线程数=16")
-    else:
-        # GPU可以使用更大的批处理
-        batch_size = 4
-        LOGGER.info(f"GPU模式：使用批处理大小={batch_size}")
+    
+    LOGGER.info(f"最终使用设备: {device}")
     
     # 加载模型配置
     model_dir = os.path.dirname(model_path)
@@ -643,9 +845,18 @@ def main():
     
     # 加载模型
     LOGGER.info("加载模型...")
-    model = load_checkpoint(train_config, model_path, strict=False, map_location='cpu')
-    model.freeze()
-    model.to(device)
+    # 根据设备设置map_location，如果使用GPU则直接加载到GPU
+    map_location = str(device) if device.type == 'cuda' else 'cpu'
+    LOGGER.info(f"模型加载位置: {map_location}")
+    # 抑制模型结构打印输出（只抑制stdout，保留stderr用于错误信息）
+    with suppress_stdout():
+        model = load_checkpoint(train_config, model_path, strict=False, map_location=map_location)
+        model.freeze()
+        if device.type == 'cuda':
+            model = model.to(device)
+    # 确保模型在GPU上（在抑制输出之外）
+    if device.type == 'cuda':
+        LOGGER.info(f"模型已移动到GPU: {next(model.parameters()).device}")
     model.eval()
     LOGGER.info("模型加载完成")
     
