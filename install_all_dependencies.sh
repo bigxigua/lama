@@ -65,14 +65,18 @@ pip install --upgrade pip
 
 echo -e "${GREEN}[2/6] 安装 PyTorch...${NC}"
 # 检查是否有 GPU
+# 注意：使用 PyTorch 1.8.1 以获得更好的稳定性（与 pytorch-lightning 1.2.9 兼容）
+# PyTorch 1.8.0/1.8.1/1.8.2 都兼容，但 1.8.1 在项目其他部分使用，更稳定
 if command -v nvidia-smi &> /dev/null; then
     echo "检测到 NVIDIA GPU，安装 CUDA 版本..."
-    conda install pytorch==1.8.0 torchvision==0.9.0 torchaudio==0.8.0 cudatoolkit=10.2 -c pytorch -y || \
-    pip install torch==1.8.0 torchvision==0.9.0 torchaudio==0.8.0
+    echo "  使用 PyTorch 1.8.1（与 pytorch-lightning 1.2.9 兼容）..."
+    conda install pytorch==1.8.1 torchvision==0.9.1 torchaudio==0.8.1 cudatoolkit=10.2 -c pytorch -y || \
+    pip install torch==1.8.1 torchvision==0.9.1 torchaudio==0.8.1
 else
     echo "未检测到 GPU，安装 CPU 版本..."
-    conda install pytorch==1.8.0 torchvision==0.9.0 torchaudio==0.8.0 cpuonly -c pytorch -y || \
-    pip install torch==1.8.0+cpu torchvision==0.9.0+cpu torchaudio==0.8.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
+    echo "  使用 PyTorch 1.8.1（与 pytorch-lightning 1.2.9 兼容）..."
+    conda install pytorch==1.8.1 torchvision==0.9.1 torchaudio==0.8.1 cpuonly -c pytorch -y || \
+    pip install torch==1.8.1+cpu torchvision==0.9.1+cpu torchaudio==0.8.1+cpu -f https://download.pytorch.org/whl/torch_stable.html
 fi
 
 echo -e "${GREEN}[3/6] 安装基础科学计算包（conda，预编译）...${NC}"
@@ -105,6 +109,7 @@ pip install shapely==1.7.1 --only-binary :all: 2>/dev/null || {
 }
 
 echo -e "${GREEN}[5/6] 安装项目特定依赖...${NC}"
+pip install future>=0.17.1
 pip install easydict==1.9.0
 pip install albumentations==0.5.2
 pip install hydra-core==1.1.0
