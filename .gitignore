@@ -137,3 +137,6 @@ dmypy.json
 *.sw?
 
 pretrained_models/
+output_videos/
+input_videos/
+video_frames/
